@@ -1,0 +1,135 @@
+version: "3.7"
+
+networks:
+  poc-kong:
+    external: false
+
+volumes:
+  postgres_data:
+    driver: local
+
+services:
+  kong-database:
+    image: postgres:9.5
+    deploy:
+      restart_policy:
+        condition: any
+    networks:
+      - poc-kong
+    environment:
+      - POSTGRES_USER=kong
+      - POSTGRES_DB=kong
+      - POSTGRES_PASSWORD=kong
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "kong"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kong-migration-bootstrap:
+    image: assis/poc-kong:latest
+    deploy:
+      restart_policy:
+        condition: on-failure
+    networks:
+      - poc-kong
+    depends_on:
+      - kong-database
+    environment:
+      - KONG_DATABASE=postgres
+      - KONG_PG_HOST=kong-database
+      - KONG_PG_USER=kong
+      - KONG_PG_PASSWORD=kong
+    command: kong migrations bootstrap
+
+  kong-migration-up:
+    image: assis/poc-kong:latest
+    networks:
+      - poc-kong
+    deploy:
+      restart_policy:
+        condition: on-failure
+    depends_on:
+      - kong-database
+    environment:
+      - KONG_DATABASE=postgres
+      - KONG_PG_HOST=kong-database
+      - KONG_PG_USER=kong
+      - KONG_PG_PASSWORD=kong
+    command: kong migrations up
+
+  kong:
+    container_name: kong
+    image: assis/poc-kong:latest
+    networks:
+      - poc-kong
+    deploy:
+      restart_policy:
+        condition: any
+    depends_on:
+      - kong-database
+    volumes:
+      - ./poc-auth:/usr/local/share/lua/5.1/kong/plugins/poc-auth
+    environment:
+      - KONG_DATABASE=postgres
+      - KONG_PG_HOST=kong-database
+      - KONG_PG_DATABASE=kong
+      - KONG_PG_PASSWORD=kong
+      - KONG_PROXY_ACCESS_LOG=/dev/stdout
+      - KONG_ADMIN_ACCESS_LOG=/dev/stdout
+      - KONG_PROXY_ERROR_LOG=/dev/stderr
+      - KONG_ADMIN_ERROR_LOG=/dev/stderr
+      - KONG_ADMIN_LISTEN=0.0.0.0:8001, 0.0.0.0:8444 ssl
+      - KONG_PROXY_LISTEN=0.0.0.0:8000, 0.0.0.0:8443 ssl http2
+      - KONG_ADMIN_LISTEN=0.0.0.0:8001
+      - KONG_REAL_IP_RECURSIVE=on
+      - KONG_NGINX_HTTP_RESOLVER=8.8.8.8
+      - KONG_PLUGINS=bundled,poc-auth
+    ports:
+      - "80:8000"
+      - "443:8443"
+      - "8001:8001"
+    healthcheck:
+      test: ["CMD", "wget", "-O-", "http://kong:8001/status"]
+      interval: 5s
+      retries: 10
+    restart: on-failure
+
+  postgres:
+    image: postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: password
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:legacy
+    environment:
+      DB_VENDOR: POSTGRES
+      DB_ADDR: postgres
+      DB_DATABASE: keycloak
+      DB_USER: keycloak
+      DB_SCHEMA: public
+      DB_PASSWORD: password
+      KEYCLOAK_USER: admin
+      KEYCLOAK_PASSWORD: Pa55w0rd
+    ports:
+      - "8081:8080"
+    depends_on:
+      - postgres
+
+  konga:
+    image: pantsel/konga
+    networks:
+      - poc-kong
+    deploy:
+      restart_policy:
+        condition: on-failure
+    depends_on:
+      - kong-database
+    environment:
+      NODE_ENV: development
+    ports:
+      - "1337:1337"
